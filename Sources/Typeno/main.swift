@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlayController: OverlayPanelController?
     private var permissionsGranted = false
     private var pollTimer: Timer?
+    private let updateService = UpdateService()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -54,6 +55,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.appState.confirmInsert()
         }
 
+        appState.onUpdateRequest = { [weak self] in
+            self?.performUpdate()
+        }
+
         // Auto-poll permissions and coli install status
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -62,6 +67,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         hotkeyMonitor?.start()
+
+        // Silent update check on launch
+        Task {
+            if let release = await updateService.checkForUpdate() {
+                statusItemController?.setUpdateAvailable(release.version)
+            }
+        }
     }
 
     private func pollStatus() {
@@ -93,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appState.confirmInsert()
         case .transcribing, .error:
             appState.cancel()
-        case .permissions, .missingColi:
+        case .permissions, .missingColi, .updating:
             break
         }
     }
@@ -139,6 +151,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let url = URL(string: "https://github.com/marswaveai/coli") else { return }
         NSWorkspace.shared.open(url)
     }
+
+    private func performUpdate() {
+        Task {
+            appState.phase = .updating("Checking for updates...")
+            appState.onOverlayRequest?(true)
+
+            guard let release = await updateService.checkForUpdate() else {
+                appState.phase = .idle
+                appState.onOverlayRequest?(false)
+                // Show brief "up to date" message
+                appState.showError("Already up to date")
+                return
+            }
+
+            do {
+                try await updateService.downloadAndInstall(from: release.downloadURL) { message in
+                    self.appState.phase = .updating(message)
+                }
+            } catch {
+                appState.showError("Update failed: \(error.localizedDescription)")
+            }
+        }
+    }
 }
 
 // MARK: - Model
@@ -176,6 +211,7 @@ enum AppPhase: Equatable {
     case done(String)        // transcription result, waiting for user confirm
     case permissions(Set<PermissionKind>)
     case missingColi
+    case updating(String)    // progress message
     case error(String)
 
     var subtitle: String {
@@ -185,6 +221,7 @@ enum AppPhase: Equatable {
         case .transcribing: "Transcribing..."
         case .done(let text): text
         case .permissions, .missingColi: ""
+        case .updating(let message): message
         case .error(let message): message
         }
     }
@@ -203,6 +240,7 @@ final class AppState: ObservableObject {
     var onCancel: (() -> Void)?
     var onConfirm: (() -> Void)?
     var onToggleRequest: (() -> Void)?
+    var onUpdateRequest: (() -> Void)?
 
     private let recorder = AudioRecorder()
     private let asrService = ColiASRService()
@@ -718,6 +756,12 @@ final class StatusItemController: NSObject {
         menu.addItem(transcribeItem)
 
         menu.addItem(NSMenuItem.separator())
+
+        let updateItem = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdates), keyEquivalent: "")
+        updateItem.target = self
+        updateItem.tag = 200
+        menu.addItem(updateItem)
+
         menu.addItem(NSMenuItem(title: "Open Privacy Settings", action: #selector(openPrivacySettings), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit TypeNo", action: #selector(quit), keyEquivalent: "q"))
@@ -742,6 +786,7 @@ final class StatusItemController: NSObject {
         case .recording: "Rec"
         case .transcribing: "..."
         case .done: "✓"
+        case .updating: "↓"
         case .permissions, .missingColi: "!"
         case .error: "!"
         }
@@ -753,6 +798,15 @@ final class StatusItemController: NSObject {
 
     @objc private func toggleRecording() {
         appState?.onToggleRequest?()
+    }
+
+    @objc private func checkForUpdates() {
+        appState?.onUpdateRequest?()
+    }
+
+    func setUpdateAvailable(_ version: String) {
+        guard let item = statusItem.menu?.item(withTag: 200) else { return }
+        item.title = "Update Available (v\(version))"
     }
 
     @objc private func transcribeFile() {
@@ -903,6 +957,11 @@ struct OverlayView: View {
                     .controlSize(.small)
             }
 
+            if case .updating = appState.phase {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
             if case .done(let text) = appState.phase {
                 Image(systemName: "doc.on.clipboard")
                     .font(.system(size: 11))
@@ -1043,6 +1102,162 @@ struct OverlayView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
+    }
+}
+
+// MARK: - Update Service
+
+final class UpdateService: @unchecked Sendable {
+    static let repoOwner = "marswaveai"
+    static let repoName = "TypeNo"
+    static let assetName = "TypeNo.app.zip"
+
+    struct ReleaseInfo {
+        let version: String
+        let downloadURL: URL
+    }
+
+    func checkForUpdate() async -> ReleaseInfo? {
+        guard let url = URL(string: "https://api.github.com/repos/\(Self.repoOwner)/\(Self.repoName)/releases/latest") else {
+            return nil
+        }
+
+        do {
+            var request = URLRequest(url: url)
+            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            let (data, _) = try await URLSession.shared.data(for: request)
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tagName = json["tag_name"] as? String,
+                  let assets = json["assets"] as? [[String: Any]] else {
+                return nil
+            }
+
+            let remoteVersion = tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName
+            let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+
+            guard Self.isNewer(remote: remoteVersion, current: currentVersion) else {
+                return nil
+            }
+
+            guard let asset = assets.first(where: { ($0["name"] as? String) == Self.assetName }),
+                  let downloadURLString = asset["browser_download_url"] as? String,
+                  let downloadURL = URL(string: downloadURLString) else {
+                return nil
+            }
+
+            return ReleaseInfo(version: remoteVersion, downloadURL: downloadURL)
+        } catch {
+            return nil
+        }
+    }
+
+    func downloadAndInstall(from downloadURL: URL, onProgress: @MainActor @Sendable (String) -> Void) async throws {
+        await onProgress("Downloading update...")
+
+        // Download zip to temp
+        let (zipURL, _) = try await URLSession.shared.download(from: downloadURL)
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("TypeNo-update-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let zipDest = tempDir.appendingPathComponent(Self.assetName)
+        if FileManager.default.fileExists(atPath: zipDest.path) {
+            try FileManager.default.removeItem(at: zipDest)
+        }
+        try FileManager.default.moveItem(at: zipURL, to: zipDest)
+
+        await onProgress("Installing update...")
+
+        // Unzip
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        unzip.arguments = ["-o", zipDest.path, "-d", tempDir.path]
+        unzip.standardOutput = FileHandle.nullDevice
+        unzip.standardError = FileHandle.nullDevice
+        try unzip.run()
+        unzip.waitUntilExit()
+
+        guard unzip.terminationStatus == 0 else {
+            throw UpdateError.unzipFailed
+        }
+
+        let newAppURL = tempDir.appendingPathComponent("TypeNo.app")
+        guard FileManager.default.fileExists(atPath: newAppURL.path) else {
+            throw UpdateError.appNotFound
+        }
+
+        // Remove quarantine
+        let xattr = Process()
+        xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        xattr.arguments = ["-rd", "com.apple.quarantine", newAppURL.path]
+        xattr.standardOutput = FileHandle.nullDevice
+        xattr.standardError = FileHandle.nullDevice
+        try? xattr.run()
+        xattr.waitUntilExit()
+
+        // Replace current app
+        let currentAppURL = Bundle.main.bundleURL
+        let appParent = currentAppURL.deletingLastPathComponent()
+        let backupURL = appParent.appendingPathComponent("TypeNo.app.bak")
+
+        // Remove old backup if exists
+        if FileManager.default.fileExists(atPath: backupURL.path) {
+            try FileManager.default.removeItem(at: backupURL)
+        }
+
+        // Move current → backup
+        try FileManager.default.moveItem(at: currentAppURL, to: backupURL)
+
+        // Move new → current
+        do {
+            try FileManager.default.moveItem(at: newAppURL, to: currentAppURL)
+        } catch {
+            // Rollback if move fails
+            try? FileManager.default.moveItem(at: backupURL, to: currentAppURL)
+            throw UpdateError.replaceFailed
+        }
+
+        // Clean up backup and temp
+        try? FileManager.default.removeItem(at: backupURL)
+        try? FileManager.default.removeItem(at: tempDir)
+
+        await onProgress("Restarting...")
+
+        // Relaunch
+        let appPath = currentAppURL.path
+        let script = Process()
+        script.executableURL = URL(fileURLWithPath: "/bin/sh")
+        script.arguments = ["-c", "sleep 1 && open \"\(appPath)\""]
+        try script.run()
+
+        await MainActor.run {
+            NSApp.terminate(nil)
+        }
+    }
+
+    private static func isNewer(remote: String, current: String) -> Bool {
+        let r = remote.split(separator: ".").compactMap { Int($0) }
+        let c = current.split(separator: ".").compactMap { Int($0) }
+        for i in 0..<max(r.count, c.count) {
+            let rv = i < r.count ? r[i] : 0
+            let cv = i < c.count ? c[i] : 0
+            if rv > cv { return true }
+            if rv < cv { return false }
+        }
+        return false
+    }
+}
+
+enum UpdateError: LocalizedError {
+    case unzipFailed
+    case appNotFound
+    case replaceFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .unzipFailed: "Failed to unzip update"
+        case .appNotFound: "Update package is invalid"
+        case .replaceFailed: "Failed to replace app"
+        }
     }
 }
 
