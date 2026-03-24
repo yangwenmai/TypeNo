@@ -24,4 +24,8 @@ fi
 
 chmod +x "$MACOS_DIR/TypeNo"
 
+if command -v codesign >/dev/null 2>&1; then
+    codesign --force --sign - --timestamp=none "$APP_DIR"
+fi
+
 echo "Built $APP_DIR"

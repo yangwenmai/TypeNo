@@ -1,8 +1,14 @@
 # TypeNo
 
+![TypeNo hero image](assets/hero.webp)
+
 A minimal macOS voice input app. Press Control, speak, done.
 
 TypeNo captures your voice, transcribes it locally, and pastes the result into whatever app you were using — all in under a second.
+
+Official website: [https://typeno.com](https://typeno.com)
+
+Special thanks to [marswave ai's coli project](https://github.com/nicepkg/coli) for powering local speech recognition.
 
 ## How It Works
 
@@ -18,13 +24,27 @@ That's it. No windows, no settings, no accounts.
 
 For most users, the easiest way is to download the latest release:
 
-- [Download TypeNo for macOS](https://github.com/nicepkg/TypeNo/releases/latest)
+- [Download TypeNo for macOS](https://github.com/marswaveai/TypeNo/releases/latest)
 - Download the latest `TypeNo.app.zip`
 - Unzip it
 - Move `TypeNo.app` to `/Applications`
 - Open TypeNo
 
-If macOS blocks the app the first time, go to **System Settings → Privacy & Security** and allow it to open.
+### If macOS says the app is damaged
+
+Current releases are not yet notarized by Apple, so macOS may block the app after download.
+
+Try these steps in order:
+
+1. Right-click `TypeNo.app` in Finder and choose **Open**
+2. If that still fails, go to **System Settings → Privacy & Security** and click **Open Anyway**
+3. If macOS still says the app is damaged, remove the quarantine flag in Terminal:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/TypeNo.app"
+```
+
+TypeNo will support proper Apple code signing and notarization in a future release.
 
 ### Install the speech engine
 
@@ -47,7 +67,7 @@ The app will guide you through granting these on first launch.
 If you prefer to build it yourself:
 
 ```bash
-git clone https://github.com/nicepkg/TypeNo.git
+git clone https://github.com/marswaveai/TypeNo.git
 cd TypeNo
 scripts/generate_icon.sh
 scripts/build_app.sh
