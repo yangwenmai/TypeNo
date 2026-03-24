@@ -9,28 +9,39 @@ import AppKit
 import CoreGraphics
 
 let size: CGFloat = 1024
+// macOS icon grid: ~80% of canvas for the icon body, with ~10% padding on each side
+let padding: CGFloat = size * 0.1
+let iconSize: CGFloat = size - padding * 2
+// macOS superellipse corner radius ≈ 22.37% of icon body size
+let cornerRadius: CGFloat = iconSize * 0.2237
+
 let image = NSImage(size: NSSize(width: size, height: size))
 
 image.lockFocus()
 
-// Background gradient
+// Rounded rect path (macOS icon shape)
+let iconRect = NSRect(x: padding, y: padding, width: iconSize, height: iconSize)
+let path = NSBezierPath(roundedRect: iconRect, xRadius: cornerRadius, yRadius: cornerRadius)
+path.addClip()
+
+// Background gradient (same brand colors)
 let gradient = NSGradient(colors: [
     NSColor(red: 0.2, green: 0.5, blue: 0.9, alpha: 1.0),
     NSColor(red: 0.1, green: 0.3, blue: 0.7, alpha: 1.0)
 ])
-gradient?.draw(in: NSRect(x: 0, y: 0, width: size, height: size), angle: 135)
+gradient?.draw(in: iconRect, angle: 135)
 
-// Draw "⌃" text
+// Draw "⌃" text centered in the icon body
 let text = "⌃"
-let font = NSFont.systemFont(ofSize: size * 0.5, weight: .light)
+let font = NSFont.systemFont(ofSize: iconSize * 0.5, weight: .light)
 let attrs: [NSAttributedString.Key: Any] = [
     .font: font,
     .foregroundColor: NSColor.white
 ]
 let textSize = text.size(withAttributes: attrs)
 let textRect = NSRect(
-    x: (size - textSize.width) / 2,
-    y: (size - textSize.height) / 2,
+    x: padding + (iconSize - textSize.width) / 2,
+    y: padding + (iconSize - textSize.height) / 2,
     width: textSize.width,
     height: textSize.height
 )
