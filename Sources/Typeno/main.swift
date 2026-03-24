@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyMonitor: HotkeyMonitor?
     private var overlayController: OverlayPanelController?
     private var permissionsGranted = false
+    private var pollTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -41,16 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openPermissionSettings(for: kind)
         }
 
-        appState.onPermissionRetryRequest = { [weak self] in
-            self?.refreshPermissionGuidance()
-        }
-
         appState.onColiInstallHelpRequest = { [weak self] in
             self?.openColiInstallHelp()
-        }
-
-        appState.onColiRetryRequest = { [weak self] in
-            self?.refreshColiGuidance()
         }
 
         appState.onCancel = { [weak self] in
@@ -61,7 +54,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.appState.confirmInsert()
         }
 
+        // Auto-poll permissions and coli install status
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.pollStatus()
+            }
+        }
+
         hotkeyMonitor?.start()
+    }
+
+    private func pollStatus() {
+        switch appState.phase {
+        case .permissions:
+            let missing = PermissionManager.missingPermissions(requestMicrophoneIfNeeded: false)
+            if missing.isEmpty {
+                permissionsGranted = true
+                appState.hidePermissions()
+            } else {
+                appState.showPermissions(missing)
+            }
+        case .missingColi:
+            if ColiASRService.isInstalled {
+                appState.hideColiGuidance()
+            }
+        default:
+            break
+        }
     }
 
     private func handleToggle() {
@@ -72,7 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stopRecording()
         case .done:
             appState.confirmInsert()
-        case .transcribing, .error, .permissions, .missingColi:
+        case .transcribing, .error:
+            appState.cancel()
+        case .permissions, .missingColi:
             break
         }
     }
@@ -117,23 +138,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openColiInstallHelp() {
         guard let url = URL(string: "https://github.com/marswaveai/coli") else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    private func refreshPermissionGuidance() {
-        let missing = PermissionManager.missingPermissions(requestMicrophoneIfNeeded: false)
-        if missing.isEmpty {
-            appState.hidePermissions()
-        } else {
-            appState.showPermissions(missing)
-        }
-    }
-
-    private func refreshColiGuidance() {
-        if ColiASRService.isInstalled {
-            appState.hideColiGuidance()
-        } else {
-            appState.showMissingColi()
-        }
     }
 }
 
@@ -195,9 +199,7 @@ final class AppState: ObservableObject {
 
     var onOverlayRequest: ((Bool) -> Void)?
     var onPermissionOpen: ((PermissionKind) -> Void)?
-    var onPermissionRetryRequest: (() -> Void)?
     var onColiInstallHelpRequest: (() -> Void)?
-    var onColiRetryRequest: (() -> Void)?
     var onCancel: (() -> Void)?
     var onConfirm: (() -> Void)?
     var onToggleRequest: (() -> Void)?
@@ -227,6 +229,7 @@ final class AppState: ObservableObject {
 
     func cancel() {
         recorder.cancel()
+        asrService.cancelCurrentProcess()
         if let currentRecordingURL {
             try? FileManager.default.removeItem(at: currentRecordingURL)
         }
@@ -468,9 +471,22 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
 
 // MARK: - ASR Service
 
-struct ColiASRService {
+final class ColiASRService: @unchecked Sendable {
     static var isInstalled: Bool {
         findColiPath() != nil
+    }
+
+    private var currentProcess: Process?
+    private let processLock = NSLock()
+
+    func cancelCurrentProcess() {
+        processLock.lock()
+        let proc = currentProcess
+        currentProcess = nil
+        processLock.unlock()
+        if let proc, proc.isRunning {
+            proc.terminate()
+        }
     }
 
     func transcribe(fileURL: URL) async throws -> String {
@@ -479,7 +495,7 @@ struct ColiASRService {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 do {
                     let process = Process()
                     process.executableURL = URL(fileURLWithPath: coliPath)
@@ -505,8 +521,30 @@ struct ColiASRService {
                     process.standardOutput = stdout
                     process.standardError = stderr
 
+                    self?.processLock.lock()
+                    self?.currentProcess = process
+                    self?.processLock.unlock()
+
                     try process.run()
+
+                    // 30-second timeout
+                    let timeoutItem = DispatchWorkItem {
+                        if process.isRunning {
+                            process.terminate()
+                        }
+                    }
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: timeoutItem)
+
                     process.waitUntilExit()
+                    timeoutItem.cancel()
+
+                    self?.processLock.lock()
+                    self?.currentProcess = nil
+                    self?.processLock.unlock()
+
+                    guard process.terminationReason != .uncaughtSignal else {
+                        throw TypeNoError.transcriptionFailed("Transcription timed out")
+                    }
 
                     let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
                     let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -803,16 +841,19 @@ final class OverlayPanelController {
 
         if let screen = NSScreen.main {
             let frame = screen.visibleFrame
-            let x = frame.midX - width / 2
+            let x: CGFloat
             let y: CGFloat
 
             if case .permissions = appState.phase {
-                // Onboarding: center of screen
-                y = frame.midY - height / 2
+                // Onboarding: top-right corner, below menu bar
+                x = frame.maxX - width - 16
+                y = frame.maxY - height - 16
             } else if case .missingColi = appState.phase {
-                y = frame.midY - height / 2
+                x = frame.maxX - width - 16
+                y = frame.maxY - height - 16
             } else {
-                // Recording/transcription bar: near bottom
+                // Recording/transcription bar: center bottom
+                x = frame.midX - width / 2
                 y = frame.minY + 48
             }
 
@@ -919,13 +960,10 @@ struct OverlayView: View {
             }
 
             HStack {
+                Text("Checking automatically...")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
                 Spacer()
-                Button("Try Again") {
-                    appState.onPermissionRetryRequest?()
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 12))
-
                 Button("Cancel") {
                     appState.onCancel?()
                 }
@@ -954,7 +992,7 @@ struct OverlayView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Install Coli to continue")
                         .font(.system(size: 13, weight: .medium))
-                    Text("TypeNo uses the local Coli speech engine. Install it once, then come back and click Try Again.")
+                    Text("TypeNo uses the local Coli speech engine.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -968,19 +1006,28 @@ struct OverlayView: View {
                 .controlSize(.small)
             }
 
-            Text("npm install -g @marswave/coli")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 36)
+            HStack(spacing: 8) {
+                Text("npm install -g @marswave/coli")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 36)
 
-            HStack {
-                Spacer()
-                Button("Try Again") {
-                    appState.onColiRetryRequest?()
+                Button(action: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("npm install -g @marswave/coli", forType: .string)
+                }) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 10))
                 }
                 .buttonStyle(.borderless)
-                .font(.system(size: 12))
+                .help("Copy command")
+            }
 
+            HStack {
+                Text("Checking automatically...")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                Spacer()
                 Button("Cancel") {
                     appState.onCancel?()
                 }
