@@ -1,18 +1,13 @@
 # TypeNo
 
-![TypeNo hero image](assets/hero.webp)
+[中文](README_CN.md) | [日本語](README_JP.md)
 
 > A free, open source, privacy-first voice input tool for macOS.
->
 > Press Control, speak, done.
 
+![TypeNo hero image](assets/hero.webp)
+
 A minimal macOS voice input app. TypeNo captures your voice, transcribes it locally, and pastes the result into whatever app you were using — all in under a second.
-
-> 免费、开源、隐私优先的 macOS 语音输入工具。
->
-> 按下 Control，说话，完成。
-
-TypeNo 是一个极简的 macOS 语音输入应用。它会录下你的声音，在本地完成转录，然后自动粘贴到你正在使用的应用中。
 
 Official website: [https://typeno.com](https://typeno.com)
 
@@ -30,15 +25,13 @@ That's it. No windows, no settings, no accounts.
 
 ### Option 1 — Download the App
 
-For most users, the easiest way is to download the latest release:
-
 - [Download TypeNo for macOS](https://github.com/marswaveai/TypeNo/releases/latest)
 - Download the latest `TypeNo.app.zip`
 - Unzip it
 - Move `TypeNo.app` to `/Applications`
 - Open TypeNo
 
-### If macOS says the app is damaged
+#### If macOS says the app is damaged
 
 Current releases are not yet notarized by Apple, so macOS may block the app after download.
 
@@ -54,8 +47,6 @@ xattr -dr com.apple.quarantine "/Applications/TypeNo.app"
 
 4. Open `TypeNo.app` again
 
-TypeNo will support proper Apple code signing and notarization in a future release.
-
 ### Install the speech engine
 
 TypeNo uses [coli](https://github.com/marswaveai/coli) for local speech recognition:
@@ -64,7 +55,7 @@ TypeNo uses [coli](https://github.com/marswaveai/coli) for local speech recognit
 npm install -g @marswave/coli
 ```
 
-If Coli is missing, TypeNo will show an in-app setup prompt with the install command and a **Try Again** action after installation.
+If Coli is missing, TypeNo will show an in-app setup prompt with the install command.
 
 ### First Launch
 
@@ -75,8 +66,6 @@ TypeNo needs two one-time permissions:
 The app will guide you through granting these on first launch.
 
 ### Option 2 — Build from Source
-
-If you prefer to build it yourself:
 
 ```bash
 git clone https://github.com/marswaveai/TypeNo.git
@@ -92,17 +81,14 @@ The app will be at `dist/TypeNo.app`. Move it to `/Applications/` for persistent
 | Action | Trigger |
 |---|---|
 | Start/stop recording | Short-press `Control` (< 300ms, no other keys) |
-| Start/stop recording | Menu bar → Record (`⌃R`) |
+| Start/stop recording | Menu bar → Record |
 | Transcribe a file | Drag `.m4a`/`.mp3`/`.wav`/`.aac` to the menu bar icon |
+| Check for updates | Menu bar → Check for Updates... |
 | Quit | Menu bar → Quit (`⌘Q`) |
 
 ## Design Philosophy
 
 TypeNo does one thing: voice → text → paste. No extra UI, no preferences, no configuration. The fastest way to type is to not type at all.
-
-## Internationalization
-
-- [中文说明](README_CN.md)
 
 ## License
 
