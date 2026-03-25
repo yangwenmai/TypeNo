@@ -473,20 +473,8 @@ final class AppState: ObservableObject {
 
         phase = .transcribing()
 
-        // Progress timer: only kick in for very long transcriptions (> 2 min)
-        let startTime = Date()
-        let progressTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                let elapsed = Int(Date().timeIntervalSince(startTime))
-                if elapsed >= 120 {
-                    self?.phase = .transcribing(L("Long audio, please wait...", "长音频，请稍候..."))
-                }
-            }
-        }
-
         do {
             let text = try await asrService.transcribe(fileURL: url)
-            progressTimer.invalidate()
             transcript = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
             guard transcript.isEmpty == false else {
@@ -498,10 +486,8 @@ final class AppState: ObservableObject {
             onOverlayRequest?(true)
             confirmInsert()
         } catch TypeNoError.coliNotInstalled {
-            progressTimer.invalidate()
             showMissingColi()
         } catch {
-            progressTimer.invalidate()
             showError(error.localizedDescription)
         }
     }
@@ -556,19 +542,8 @@ final class AppState: ObservableObject {
         phase = .transcribing()
         onOverlayRequest?(true)
 
-        let startTime = Date()
-        let progressTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                let elapsed = Int(Date().timeIntervalSince(startTime))
-                if elapsed >= 120 {
-                    self?.phase = .transcribing(L("Long audio, please wait...", "长音频，请稍候..."))
-                }
-            }
-        }
-
         do {
             let text = try await asrService.transcribe(fileURL: url)
-            progressTimer.invalidate()
             transcript = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
             guard transcript.isEmpty == false else {
@@ -583,10 +558,8 @@ final class AppState: ObservableObject {
             try? await Task.sleep(for: .seconds(2))
             cancel()
         } catch TypeNoError.coliNotInstalled {
-            progressTimer.invalidate()
             showMissingColi()
         } catch {
-            progressTimer.invalidate()
             showError(error.localizedDescription)
         }
     }
@@ -1565,9 +1538,12 @@ struct OverlayView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
             } else if case .recording = appState.phase {
-                Text(appState.recordingElapsedStr)
+                let nearLimit = appState.recordingElapsedSeconds >= 105  // 1:45
+                Text(nearLimit
+                     ? L("⚠ \(appState.recordingElapsedStr)", "⚠ \(appState.recordingElapsedStr)")
+                     : appState.recordingElapsedStr)
                     .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(nearLimit ? Color.orange : Color.primary)
             } else {
                 Text(appState.phase.subtitle)
                     .font(.system(size: 13))
