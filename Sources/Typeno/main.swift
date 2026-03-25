@@ -1861,17 +1861,29 @@ final class UpdateService: @unchecked Sendable {
             throw UpdateError.replaceFailed
         }
 
+        // Remove quarantine from the final location AFTER the move.
+        // Some macOS versions re-add quarantine during FileManager.moveItem;
+        // cleaning here ensures the relocated app is trusted when opened.
+        let xattrFinal = Process()
+        xattrFinal.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        xattrFinal.arguments = ["-cr", currentAppURL.path]   // -c clears all xattrs, -r recursive
+        xattrFinal.standardOutput = FileHandle.nullDevice
+        xattrFinal.standardError = FileHandle.nullDevice
+        try? xattrFinal.run()
+        xattrFinal.waitUntilExit()
+
         // Clean up backup and temp
         try? FileManager.default.removeItem(at: backupURL)
         try? FileManager.default.removeItem(at: tempDir)
 
         await onProgress("Restarting...")
 
-        // Relaunch
+        // Relaunch: strip quarantine one final time right before open so
+        // any attribute reapplied between here and the actual launch is cleared.
         let appPath = currentAppURL.path
         let script = Process()
         script.executableURL = URL(fileURLWithPath: "/bin/sh")
-        script.arguments = ["-c", "sleep 1 && open \"\(appPath)\""]
+        script.arguments = ["-c", "sleep 1 && xattr -cr \"\(appPath)\" && open \"\(appPath)\""]
         try script.run()
 
         await MainActor.run {
