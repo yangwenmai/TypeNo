@@ -751,6 +751,20 @@ final class ColiASRService: @unchecked Sendable {
                     ]
                     let existingPath = env["PATH"] ?? "/usr/bin:/bin"
                     env["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
+
+                    // Inject macOS system proxy settings so Node.js fetch (undici) can reach
+                    // the internet when a system proxy is configured (e.g. via System Settings).
+                    // GUI apps don't source shell profiles, so HTTP_PROXY / HTTPS_PROXY are
+                    // typically unset even when the system proxy is active.
+                    if env["HTTP_PROXY"] == nil && env["HTTPS_PROXY"] == nil && env["http_proxy"] == nil {
+                        if let proxyURL = Self.systemHTTPSProxyURL() {
+                            env["HTTPS_PROXY"] = proxyURL
+                            env["HTTP_PROXY"] = proxyURL
+                            env["https_proxy"] = proxyURL
+                            env["http_proxy"] = proxyURL
+                        }
+                    }
+
                     process.environment = env
 
                     let stdout = Pipe()
@@ -816,6 +830,25 @@ final class ColiASRService: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Returns the macOS system HTTPS proxy as an "http://host:port" string, or nil if none is set.
+    static func systemHTTPSProxyURL() -> String? {
+        guard let proxySettings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else {
+            return nil
+        }
+        // Check HTTPS proxy first, fall back to HTTP proxy
+        if let httpsEnabled = proxySettings[kCFNetworkProxiesHTTPSEnable as String] as? Int, httpsEnabled == 1,
+           let host = proxySettings[kCFNetworkProxiesHTTPSProxy as String] as? String,
+           let port = proxySettings[kCFNetworkProxiesHTTPSPort as String] as? Int, !host.isEmpty {
+            return "http://\(host):\(port)"
+        }
+        if let httpEnabled = proxySettings[kCFNetworkProxiesHTTPEnable as String] as? Int, httpEnabled == 1,
+           let host = proxySettings[kCFNetworkProxiesHTTPProxy as String] as? String,
+           let port = proxySettings[kCFNetworkProxiesHTTPPort as String] as? Int, !host.isEmpty {
+            return "http://\(host):\(port)"
+        }
+        return nil
     }
 
     static func findNpmPath() -> String? {
