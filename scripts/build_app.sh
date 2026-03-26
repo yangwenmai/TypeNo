@@ -33,13 +33,18 @@ find_codesign_identity() {
 
 mkdir -p "$ROOT_DIR/dist"
 
-echo "==> Building TypeNo..."
-swift build -c release --package-path "$ROOT_DIR"
+echo "==> Building TypeNo (Universal Binary: arm64 + x86_64)..."
+swift build -c release --arch arm64 --arch x86_64 --package-path "$ROOT_DIR"
+
+UNIVERSAL_BINARY="$ROOT_DIR/.build/apple/Products/Release/TypeNo"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-cp "$BUILD_DIR/TypeNo" "$MACOS_DIR/TypeNo"
+cp "$UNIVERSAL_BINARY" "$MACOS_DIR/TypeNo"
+
+echo "==> Verifying Universal Binary..."
+lipo -info "$MACOS_DIR/TypeNo"
 cp "$ROOT_DIR/App/Info.plist" "$CONTENTS_DIR/Info.plist"
 
 if [ -f "$ROOT_DIR/App/TypeNo.icns" ]; then
